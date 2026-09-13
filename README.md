@@ -1,6 +1,6 @@
 # termux-vps
 
-Turn an Android phone running [Termux](https://termux.dev) + proot-distro into a
+Turn **any** Android phone running [Termux](https://termux.dev) + proot-distro into a
 mini VPS you can SSH into from anywhere — with **zero extra software on the
 client machine**, thanks to [Tailscale Funnel](https://tailscale.com/kb/1223/funnel).
 
@@ -9,6 +9,13 @@ laptop ──ssh──► internet ──► Tailscale Funnel (:443) ──► s
 ```
 
 ## Quick start (fresh Termux)
+
+Requirements:
+
+- Android 11+ phone (the tailscale-termux package needs this)
+- [Termux](https://github.com/termux/termux-app/releases) installed from GitHub Releases or
+  F-Droid — **not** the Play Store build (deprecated, breaks `pkg`/`proot-distro`)
+- A free [Tailscale account](https://login.tailscale.com/start) (sign in when prompted)
 
 ```bash
 pkg update && pkg install -y git
