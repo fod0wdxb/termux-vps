@@ -39,7 +39,7 @@ else
     dnf install -y openssh-server cracklib-dicts curl
     ssh-keygen -A
     if ! grep -q "^Port $PORT$" /etc/ssh/sshd_config 2>/dev/null; then
-        printf '\n# --- termux-vps ---\nPort %s\nPermitRootLogin yes\nPasswordAuthentication yes\n' "$PORT" >> /etc/ssh/sshd_config
+        printf '\n# --- termux-vps ---\nPort %s\nPermitRootLogin no\nPasswordAuthentication yes\n' "$PORT" >> /etc/ssh/sshd_config
     fi
     /usr/sbin/sshd -t
 INNER
@@ -59,16 +59,28 @@ cp "$SCRIPT_DIR/vps" "$SCRIPT_DIR/vps-stop" "$HOME/"
 chmod +x "$HOME/vps" "$HOME/vps-stop"
 ok "~/vps, ~/vps-stop"
 
-# --- [5/6] root password ------------------------------------------------
-step 5 "Root password"
-if proot-distro login "$DISTRO" -- bash -c 'grep -q "^root:[^!*]" /etc/shadow' 2>/dev/null; then
-    ok "root password already set"
-else
+# --- [5/6] daily user + root password -----------------------------------
+step 5 "Daily user (sudo) + root lockout"
+proot-distro login "$DISTRO" -- bash << 'INNER'
+set -e
+# daily sudo user (wheel group); create only if missing
+if ! id "${VPS_USER:-fedora}" >/dev/null 2>&1; then
+    useradd -m -G wheel -s /bin/bash "${VPS_USER:-fedora}"
+fi
+# root login stays disabled; user+sudo is the normal path
+grep -q "^PermitRootLogin no$" /etc/ssh/sshd_config 2>/dev/null || \
+    sed -i 's/^PermitRootLogin yes$/PermitRootLogin no/' /etc/ssh/sshd_config
+/usr/sbin/sshd -t
+INNER
+ok "user '${VPS_USER:-fedora}' (wheel/sudo); root SSH disabled"
+
+if ! proot-distro login "$DISTRO" -- bash -c 'grep -q "^'"${VPS_USER:-fedora}"':[^!*]" /etc/shadow' 2>/dev/null; then
     echo
-    echo "  >>> ACTION NEEDED: set the Fedora root password (your SSH password):"
+    echo "  >>> ACTION NEEDED: set the password for the daily user (your SSH password):"
     echo "  >>>   proot-distro login $DISTRO"
-    echo "  >>>   passwd root"
+    echo "  >>>   passwd ${VPS_USER:-fedora}"
     echo "  >>>   exit"
+    echo "  >>> (root has no SSH login — use this user + sudo for admin tasks)"
 fi
 
 # --- [6/6] done ----------------------------------------------------------

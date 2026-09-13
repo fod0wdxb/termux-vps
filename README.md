@@ -27,18 +27,21 @@ cd termux-vps
 bash install.sh
 ```
 
-One interactive step only: set the root password (`passwd root` inside Fedora).
+One interactive step only: set the daily user password (`passwd fedora` inside Fedora).
 
 Then start it: `~/vps` — prints the public ssh command.
 
 ## Daily usage
 
+Log in as `fedora` (the daily sudo user); use `sudo` for admin — like a normal
+Linux machine. Root SSH login is disabled by design.
+
 | Command | Where | What |
 |---|---|---|
 | `~/vps` | Termux | Boots VPS: wake-lock, sshd + bore tunnel with watchdog, prints ssh command |
 | `~/vps-stop` | Termux | Full teardown: sshd, bore, wake-lock |
-| `ssh root@bore.pub -p 22022` | anywhere | The public path — plain ssh, nothing installed |
-| `ssh root@<phone-ip> -p 2222` | same Wi-Fi/hotspot | LAN path — even simpler, no relay |
+| `ssh fedora@bore.pub -p <port>` | anywhere | The public path — plain ssh, nothing installed |
+| `ssh fedora@<phone-ip> -p 2222` | same Wi-Fi/hotspot | LAN path — even simpler, no relay |
 
 The VPS exists **only while `vps` runs** — you decide when the phone is reachable.
 
@@ -58,7 +61,7 @@ The VPS exists **only while `vps` runs** — you decide when the phone is reacha
   instantly closed, forcing an `openssl s_client` ProxyCommand hack.
 - Termux's tailscaled must run userspace-mode, adding another moving piece
   that occasionally needs babysitting.
-- bore is one static binary, raw TCP, one command. `ssh root@bore.pub -p N`.
+- bore is one static binary, raw TCP, one command. `ssh fedora@bore.pub -p N`.
 
 ## Autostart on phone reboot (optional)
 
@@ -85,7 +88,7 @@ optimization.
 ## Security
 
 - The public endpoint is `bore.pub` on a **fixed port** — bots do scan relays.
-  Use a long random root password (20+ chars) or SSH keys.
+  Use a long random password (20+ chars) or SSH keys. SSH as `fedora`, admin via `sudo`.
 - Key-only hardening: drop your public key into
   `/root/.ssh/authorized_keys` in Fedora, then set
   `PasswordAuthentication no` in `/etc/ssh/sshd_config`.
@@ -100,7 +103,7 @@ optimization.
 |---|---|
 | `bore.pub` unreachable | relay down (rare) — use LAN mode meanwhile, or self-host `bore server` |
 | fixed port 22022 taken | script auto-falls back to a random port; or set your own `BORE_PORT` |
-| ssh auth fails | `proot-distro login fedora` → `passwd root` |
+| ssh auth fails | `proot-distro login fedora` → `passwd fedora` |
 | `passwd` errors `pw_dict.pwd.gz: No such file` | `dnf install -y cracklib-dicts` (stock container lacks the dictionary; install.sh now does this automatically) |
 | dies after minutes | exempt Termux from battery optimization; keep `vps` session in foreground |
 | after phone reboot | `~/vps`, or set up Termux:Boot (above) |
