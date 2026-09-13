@@ -64,7 +64,7 @@ if [ -x "$(command -v $TS)" ] || [ -x "/data/data/com.termux/files/usr/bin/$TS" 
         case "$STATE" in
             Running)
                 TS_MODE=on
-                DNS_NAME="$(ts status --json 2>/dev/null | sed -n 's/.*"DNSName"[[:space:]]*:[[:space:]]*"\([^"]*\)\..*".*/\1/p' | head -1)"
+                DNS_NAME="$(ts status --json 2>/dev/null | tr ',' '\n' | grep -o '"DNSName": *"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/;s/\.$//')"
                 TS_IP="$(ts ip -4 2>/dev/null | head -1)"
                 ;;
             NeedsLogin|NoState|Stopped)
@@ -94,10 +94,10 @@ echo "${BOLD}VPS starting...${NORM} (Fedora proot, sshd on :$PORT)"
 echo
 
 # Export connection info for the container banner (no secrets)
-export VPS_HOST="${DNS_NAME:+$DNS_NAME.}$(ts status --json 2>/dev/null | sed -n 's/.*"DNSName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 | sed 's/\.$//')"
+export VPS_HOST="$DNS_NAME"
 export VPS_TAILNET_IP="$TS_IP"
 export VPS_LAN_IP="$LAN_IP"
 export VPS_TS_MODE="$TS_MODE"
 
-exec proot-distro login "$DISTRO" --env VPS_HOST --env VPS_TAILNET_IP \
-     --env VPS_LAN_IP --env VPS_TS_MODE -- /usr/local/bin/vps-start.sh
+exec proot-distro login "$DISTRO" -e VPS_HOST="$VPS_HOST" -e VPS_TAILNET_IP="$VPS_TAILNET_IP" \
+     -e VPS_LAN_IP="$VPS_LAN_IP" -e VPS_TS_MODE="$VPS_TS_MODE" -- /usr/local/bin/vps-start.sh
