@@ -1,15 +1,13 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # vps-stop — full teardown. Safe to run multiple times.
-# Kills only what ./vps started; never touches this session's own parents.
+# Kills only what ./vps started; never its own ancestors.
 
-TS="${TS:-tailscale}"
-SOCK="$HOME/.tailscale/tailscaled.sock"
-ts() { "$TS" --socket="$SOCK" "$@"; }
+# sshd + bore inside the container (via short-lived proot; harmless if down)
+# NOTE: /proc name matching is unreliable in proot — kill by pattern broadly,
+# and accept "no match" (exit 1 from pkill) as fine.
+proot-distro login fedora -- bash -c 'pkill sshd; pkill bore; true' 2>/dev/null
 
-# sshd inside the container (via short-lived proot; harmless if already down)
-proot-distro login fedora -- pkill -x sshd 2>/dev/null
-
-# any interactive `vps` proot sessions (keep-alive loops), except our ancestors
+# interactive `vps` proot sessions (keep-alive loops), except our ancestors
 for pid in $(pgrep -f "proot-distro login fedora" 2>/dev/null); do
     skip=0
     p="$pid"
@@ -22,9 +20,5 @@ for pid in $(pgrep -f "proot-distro login fedora" 2>/dev/null); do
     kill "$pid" 2>/dev/null
 done
 
-# close forwarders
-ts serve --tcp=22  off >/dev/null 2>&1 || true
-ts funnel --tls-terminated-tcp=443 off >/dev/null 2>&1 || true
-
 termux-wake-unlock 2>/dev/null || true
-echo "VPS stopped. (tailscaled keeps running — it's harmless.)"
+echo "VPS stopped."

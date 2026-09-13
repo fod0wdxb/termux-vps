@@ -2,20 +2,23 @@
 
 Turn **any** Android phone running [Termux](https://termux.dev) + proot-distro into a
 mini VPS you can SSH into from anywhere — with **zero extra software on the
-client machine**, thanks to [Tailscale Funnel](https://tailscale.com/kb/1223/funnel).
+client machine**, thanks to [bore](https://github.com/ekzhang/bore) (open source,
+Rust, ~400 lines) and its public relay `bore.pub`.
 
 ```
-laptop ──ssh──► internet ──► Tailscale Funnel (:443) ──► sshd in Fedora proot (:2222)
+laptop ──plain ssh──► bore.pub:22022 ──tunnel──► bore (phone) ──► sshd in Fedora proot (:2222)
 ```
+
+Plain `ssh`. No TLS wrappers, no accounts, no client installs, no Funnel.
 
 ## Quick start (fresh Termux)
 
 Requirements:
 
-- Android 11+ phone (the tailscale-termux package needs this)
-- [Termux](https://github.com/termux/termux-app/releases) installed from GitHub Releases or
-  F-Droid — **not** the Play Store build (deprecated, breaks `pkg`/`proot-distro`)
-- A free [Tailscale account](https://login.tailscale.com/start) (sign in when prompted)
+- Android phone, aarch64 (most phones)
+- [Termux](https://github.com/termux/termux-app/releases) from GitHub Releases or
+  F-Droid — **not** the Play Store build (deprecated)
+- Nothing else. No accounts anywhere.
 
 ```bash
 pkg update && pkg install -y git
@@ -24,42 +27,38 @@ cd termux-vps
 bash install.sh
 ```
 
-`install.sh` is **idempotent** — safe to re-run after interruptions; it skips
-what's already done. It prints the few interactive steps it can't do for you:
+One interactive step only: set the root password (`passwd root` inside Fedora).
 
-1. `passwd root` — inside the Fedora container (your SSH password)
-2. `tailscale up` — sign in with your Tailscale account
-3. Funnel approval — one URL click, first time only per tailnet
-
-Then start the VPS any time: `~/vps`
+Then start it: `~/vps` — prints the public ssh command.
 
 ## Daily usage
 
 | Command | Where | What |
 |---|---|---|
-| `~/vps` | Termux | Boots VPS: wake-lock, tailscaled check, Funnel forwarders, sshd, prints ssh command |
-| `~/vps-stop` | Termux | Full teardown: sshd, forwarders, wake-lock |
-| `ssh -o ProxyCommand='openssl s_client -connect <name>.ts.net:443 -quiet' root@vps` | anywhere | Log in over public Funnel bridge (TLS-terminated) |
-| `ssh root@100.x.y.z` | tailnet client | Tailnet-only path (needs Tailscale on client) |
-
-**Why the openssl wrapper for public access?** Tailscale Funnel's edge only
-forwards **TLS** traffic (it routes by the TLS SNI hostname — see
-[tailscale/tailscale#7103](https://github.com/tailscale/tailscale/issues/7103)).
-A bare `ssh` speaks no TLS, so the edge closes the connection. With
-`--tls-terminated-tcp`, Funnel strips the TLS and forwards the raw stream to
-sshd; `openssl s_client` (preinstalled on macOS/Linux) adds the TLS on the
-client side. Easiest setup — put this in your laptop's `~/.ssh/config`:
-
-```
-Host phone-vps
-    HostName vps
-    User root
-    ProxyCommand openssl s_client -connect <your-name>.tailXXXX.ts.net:443 -quiet
-```
-
-then it's just: `ssh phone-vps`
+| `~/vps` | Termux | Boots VPS: wake-lock, sshd + bore tunnel with watchdog, prints ssh command |
+| `~/vps-stop` | Termux | Full teardown: sshd, bore, wake-lock |
+| `ssh root@bore.pub -p 22022` | anywhere | The public path — plain ssh, nothing installed |
+| `ssh root@<phone-ip> -p 2222` | same Wi-Fi/hotspot | LAN path — even simpler, no relay |
 
 The VPS exists **only while `vps` runs** — you decide when the phone is reachable.
+
+## How it works
+
+- **sshd** runs inside the Fedora proot container on `:2222`.
+- **bore** runs inside the same container and dials *out* to `bore.pub` (no
+  inbound firewall rules needed — perfect for CGNAT/mobile networks), asking
+  for a **fixed public port** (`22022` by default, configurable via `BORE_PORT`).
+- The laptop connects with completely ordinary ssh. SSH is end-to-end
+  encrypted; the relay only shuttles bytes. bore itself is MIT-licensed and
+  trivially self-hostable if you ever want your own relay: `bore server`.
+
+### Why bore instead of Tailscale Funnel?
+
+- Funnel requires **TLS** on port 443 (SNI routing) — plain `ssh` gets
+  instantly closed, forcing an `openssl s_client` ProxyCommand hack.
+- Termux's tailscaled must run userspace-mode, adding another moving piece
+  that occasionally needs babysitting.
+- bore is one static binary, raw TCP, one command. `ssh root@bore.pub -p N`.
 
 ## Autostart on phone reboot (optional)
 
@@ -68,71 +67,47 @@ same signature as Termux), then once:
 
 ```bash
 mkdir -p ~/.termux/boot
-cp ~/termux-vps/boot-autostart.sh ~/.termux/boot/10-vps
+cp boot-autostart.sh ~/.termux/boot/10-vps
 ```
 
-After each phone reboot the VPS comes up headless (~30s), no Termux app open needed.
-Battery-optimization exemption for both Termux apps recommended.
-
-## The pieces
-
-```
-vps                  Termux orchestrator (idempotent, graceful degradation to LAN mode)
-vps-start.sh         inside Fedora: starts sshd, banner, keep-alive loop
-vps-stop             teardown that never kills its own ancestors
-boot-autostart.sh    Termux:Boot hook for reboot survival
-install.sh           one-shot idempotent installer
-```
-
-### How it works
-
-- **sshd** runs inside the Fedora proot container on `:2222`, root + password login.
-- **Termux's tailscaled** runs in userspace-networking mode (Android has no root
-  VPN tunnel), so inbound connections must be bridged.
-- **`tailscale funnel --tls-terminated-tcp=443`** bridges the public internet
-  to `127.0.0.1:2222` — TLS is mandatory at Funnel's edge (SNI routing), the
-  daemon terminates it and hands raw SSH to sshd. Client wraps with openssl
-  (see above). Zero extra software — openssl ships with macOS and every distro.
-- **`tailscale serve --tcp=22`** bridges the tailnet to the same sshd — if you do
-  have Tailscale on a client, use this path (faster, private, still works).
-- `vps` exports connection info as env vars into the container; the banner shows
-  whichever paths are actually available. If Tailscale is down, it degrades to
-  LAN mode instead of failing.
+The VPS comes back headless ~30s after each reboot. Exempt Termux from battery
+optimization.
 
 ## Robustness notes
 
-- Every script is **idempotent** — `vps` twice, `vps-stop` twice, `install.sh`
-  after a partial run: all safe.
-- `vps-start.sh` keep-alive re-checks sshd every 30s; if it dies, it restarts.
-- `vps-stop` walks each target's parent chain and never kills its own ancestors.
-- `vps` handles: tailscaled not running (starts it), not logged in (warns, LAN
-  mode), Funnel unapproved (prints the approval URL).
+- All scripts are **idempotent** — safe to re-run, re-boot, stack `vps` twice.
+- `vps-start.sh` watchdogs sshd **and** the bore tunnel every 30s; either is
+  restarted if it dies. If the fixed relay port is taken, it falls back to a
+  random port and prints the actual one.
+- `vps` degrades to LAN-only mode if the relay is unreachable.
+- `vps-stop` never kills its own ancestor processes.
 
 ## Security
 
-- Funnel exposes **tcp/443 only** to the internet; everything else on the phone
-  is unreachable. Bots do scan `.ts.net` — use a long random password or SSH keys.
-- Going key-only: add your key to `/root/.ssh/authorized_keys` in Fedora, then
-  set `PasswordAuthentication no` in `/etc/ssh/sshd_config`.
+- The public endpoint is `bore.pub` on a **fixed port** — bots do scan relays.
+  Use a long random root password (20+ chars) or SSH keys.
+- Key-only hardening: drop your public key into
+  `/root/.ssh/authorized_keys` in Fedora, then set
+  `PasswordAuthentication no` in `/etc/ssh/sshd_config`.
 - `vps-stop` (or closing Termux) removes all exposure instantly.
-- Never commit passwords/tokens; none are in this repo.
+- `bore.pub` is a free community relay — best-effort availability. For
+  guaranteed uptime, self-host: run `bore server` on any $4 VPS and set
+  `BORE_RELAY` in the scripts.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `vps` says LAN mode only | `tailscale up` (login), or `tailscale-test` (diagnostics) |
+| `bore.pub` unreachable | relay down (rare) — use LAN mode meanwhile, or self-host `bore server` |
+| fixed port 22022 taken | script auto-falls back to a random port; or set your own `BORE_PORT` |
 | ssh auth fails | `proot-distro login fedora` → `passwd root` |
-| Funnel "not enabled" | `vps` prints the approval URL; open it, re-run `vps` |
-| `Connection closed by ... port 443` | you used plain `ssh` — Funnel needs TLS, use the ProxyCommand form above |
-| dies after minutes | hold `termux-wake-lock` (automatic), exempt Termux from battery optimization |
-| after phone reboot | run `~/vps`, or set up Termux:Boot (above) |
-| `tailscale up` hangs | `tailscale-test` diagnostics from the tailscale-termux package |
+| dies after minutes | exempt Termux from battery optimization; keep `vps` session in foreground |
+| after phone reboot | `~/vps`, or set up Termux:Boot (above) |
 
 ## Credits
 
-- [bropines/tailscale-termux-cli](https://github.com/bropines/tailscale-termux-cli) —
-  the patched Tailscale build that makes userspace-mode + Funnel work on Termux.
+- [ekzhang/bore](https://github.com/ekzhang/bore) — the tunnel.
+- [proot-distro](https://github.com/termux/proot-distro) — the container.
 
 ## License
 

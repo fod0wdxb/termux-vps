@@ -5,30 +5,22 @@ set -euo pipefail
 
 DISTRO="${DISTRO:-fedora}"
 PORT="${PORT:-2222}"
+BORE_RELAY="${BORE_RELAY:-bore.pub}"
+BORE_PORT="${BORE_PORT:-22022}"
+BORE_VERSION="0.6.0"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 
-step() { echo; echo "=== [${1}/7] ${2} ==="; }
+step() { echo; echo "=== [${1}/6] ${2} ==="; }
 ok()   { echo "    [ok] $*"; }
 
-# --- [1/7] packages ----------------------------------------------------
+# --- [1/6] packages ----------------------------------------------------
 step 1 "Base packages"
 pkg update -y
-pkg install -y proot-distro openssh termux-services curl wget procps coreutils zstd resolv-conf ifconfig resolv-conf
-command -v ifconfig >/dev/null 2>&1 || pkg install -y net-tools
+pkg install -y proot-distro openssh curl wget ifconfig 2>/dev/null || pkg install -y proot-distro openssh curl wget net-tools
 ok "base packages"
 
-# --- [2/7] tailscale-termux ---------------------------------------------
-step 2 "tailscale-termux (bropines/tailscale-termux-cli)"
-if command -v tailscale >/dev/null 2>&1; then
-    ok "already installed: $(tailscale version 2>/dev/null | head -1 || echo present)"
-else
-    curl -fsSL https://raw.githubusercontent.com/bropines/tailscale-termux-cli/main/remote-install.sh | bash
-    command -v tailscale >/dev/null 2>&1 && ok "tailscale-termux installed" || { echo "[FAIL] tailscale install failed"; exit 1; }
-fi
-
-# --- [3/7] Fedora container --------------------------------------------
-step 3 "proot-distro: $DISTRO"
+# --- [2/6] Fedora container --------------------------------------------
+step 2 "proot-distro: $DISTRO"
 if proot-distro list 2>/dev/null | grep -qE "^\* *$DISTRO"; then
     ok "$DISTRO already installed"
 else
@@ -36,68 +28,54 @@ else
     ok "$DISTRO installed"
 fi
 
-# --- [4/7] sshd inside container ---------------------------------------
-step 4 "sshd inside $DISTRO"
-if proot-distro login "$DISTRO" -- test -x /usr/sbin/sshd 2>/dev/null; then
-    ok "openssh-server already installed"
+# --- [3/6] sshd + bore inside container --------------------------------
+step 3 "sshd + bore inside $DISTRO"
+if proot-distro login "$DISTRO" -- test -x /usr/local/bin/bore 2>/dev/null && \
+   proot-distro login "$DISTRO" -- test -x /usr/sbin/sshd 2>/dev/null; then
+    ok "sshd + bore already installed"
 else
     proot-distro login "$DISTRO" -- bash << 'INNER'
     set -e
-    dnf install -y openssh-server
+    dnf install -y openssh-server curl
     ssh-keygen -A
-    # config is appended once (idempotent)
     if ! grep -q "^Port $PORT$" /etc/ssh/sshd_config 2>/dev/null; then
         printf '\n# --- termux-vps ---\nPort %s\nPermitRootLogin yes\nPasswordAuthentication yes\n' "$PORT" >> /etc/ssh/sshd_config
     fi
     /usr/sbin/sshd -t
 INNER
-    ok "sshd configured on :$PORT"
+    proot-distro push "$SCRIPT_DIR/vps-start.sh" /usr/local/bin/vps-start.sh >/dev/null
+    proot-distro login "$DISTRO" -- bash -c '
+        curl -fsSL -o /tmp/bore.tgz https://github.com/ekzhang/bore/releases/download/v0.6.0/bore-v0.6.0-aarch64-unknown-linux-musl.tar.gz
+        tar xzf /tmp/bore.tgz -C /tmp
+        mv /tmp/bore /usr/local/bin/bore && chmod +x /usr/local/bin/bore
+        rm -f /tmp/bore.tgz
+        /usr/local/bin/bore --version'
+    ok "sshd (:$PORT) + bore installed in container"
 fi
 
-# --- [5/7] scripts ------------------------------------------------------
-step 5 "Installing scripts"
-proot-distro push "$SCRIPT_DIR/vps-start.sh" /usr/local/bin/vps-start.sh >/dev/null
-proot-distro login "$DISTRO" -- chmod +x /usr/local/bin/vps-start.sh
+# --- [4/6] Termux-side scripts -----------------------------------------
+step 4 "Installing scripts"
 cp "$SCRIPT_DIR/vps" "$SCRIPT_DIR/vps-stop" "$HOME/"
 chmod +x "$HOME/vps" "$HOME/vps-stop"
-mkdir -p "$HOME/termux-vps"
-cp "$SCRIPT_DIR"/{vps,vps-stop,vps-start.sh,boot-autostart.sh,README.md} "$HOME/termux-vps/" 2>/dev/null || true
-ok "~/vps, ~/vps-stop, ~/termux-vps/"
+ok "~/vps, ~/vps-stop"
 
-# --- [6/7] tailscale service + login ------------------------------------
-step 6 "tailscaled service"
-tailscaled-start --service=on >/dev/null 2>&1 || true
-STATE="$(tailscale status --json 2>/dev/null | sed -n 's/.*"BackendState"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
-case "${STATE:-}" in
-    Running)
-        ok "Tailscale logged in and running"
-        ;;
-    *)
-        echo
-        echo "  >>> ACTION NEEDED: Tailscale login."
-        echo "  >>> Run:  tailscale up"
-        echo "  >>> Open the printed URL, sign in with the SAME account you use everywhere."
-        echo "  >>> Then run:  bash install.sh   (again — it is idempotent, continues from here)"
-        ;;
-esac
-
-# --- [7/7] root password + funnel ---------------------------------------
-step 7 "Final checks"
+# --- [5/6] root password ------------------------------------------------
+step 5 "Root password"
 if proot-distro login "$DISTRO" -- bash -c 'grep -q "^root:[^!*]" /etc/shadow' 2>/dev/null; then
     ok "root password already set"
 else
     echo
-    echo "  >>> ACTION NEEDED: set the Fedora root password (what you'll type at SSH):"
+    echo "  >>> ACTION NEEDED: set the Fedora root password (your SSH password):"
     echo "  >>>   proot-distro login $DISTRO"
     echo "  >>>   passwd root"
     echo "  >>>   exit"
 fi
 
+# --- [6/6] done ----------------------------------------------------------
+step 6 "Done"
 echo
-echo "  Funnel (public SSH from anywhere, no client software) enables on first ./vps run."
-echo "  If your tailnet has never had Funnel approved, ./vps prints the approval URL once."
-echo
-echo "  After the steps above, start your VPS any time:"
-echo "      ${HOME}/vps"
+echo "  Start your VPS any time:   ~/vps"
+echo "  It prints the public ssh command (bore.pub:$BORE_PORT if free)."
+echo "  Stop it:                   ~/vps-stop"
 echo
 echo "Install finished."

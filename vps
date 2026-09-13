@@ -2,106 +2,16 @@
 # vps — one command to turn your phone into an SSH-able VPS.
 # Run from plain Termux (NOT inside proot). Idempotent.
 #
-# What it does, every time:
-#   1. wake-lock (Android won't kill the session)
-#   2. ensure tailscaled is up (via termux-services or manual)
-#   3. ensure both forwarders exist:
-#        :22  tailnet-only  (client has Tailscale installed)
-#        :443 public via Funnel (zero client software)
-#   4. boot the Fedora container + sshd, show connection info
+# Boots: Fedora proot -> sshd (:2222) + bore tunnel (bore.pub:22022, fixed).
 
 DISTRO="${DISTRO:-fedora}"
 PORT="${PORT:-2222}"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-TS="${TS:-tailscale}"
-BOLD="$(tput bold 2>/dev/null || echo '')"; NORM="$(tput sgr0 2>/dev/null || echo '')"
 
-ts() { "$TS" --socket="$SOCKET" "$@"; }
-SOCKET="$HOME/.tailscale/tailscaled.sock"
-
-# --- helpers -----------------------------------------------------------
-
-ensure_tailscaled() {
-    if ts status >/dev/null 2>&1; then return 0; fi
-    echo "[..] tailscaled not responding, starting it..."
-    if command -v sv >/dev/null 2>&1 && [ -d "${PREFIX:-/data/data/com.termux/files/usr}/var/service/tailscaled" ]; then
-        sv up tailscaled 2>/dev/null || true
-    fi
-    ts status >/dev/null 2>&1 && return 0
-    command -v tailscaled-start >/dev/null 2>&1 && tailscaled-start >/dev/null 2>&1
-    for _ in 1 2 3 4 5 6; do
-        sleep 1
-        ts status >/dev/null 2>&1 && return 0
-    done
-    return 1
-}
-
-tailscale_state() {
-    ts status --json 2>/dev/null | sed -n 's/.*"BackendState"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
-}
-
-ensure_forwarders() {
-    # :22 tailnet-only + :443 public Funnel — both persist once configured
-    # :22  tailnet-only raw TCP (client has Tailscale) — plain ssh
-    # :443 public via Funnel — must be TLS-terminated: Funnel's edge only
-    #      forwards TLS (it routes by SNI; raw TCP gets closed instantly).
-    #      Client connects with: ssh over openssl s_client (see README).
-    ts serve --bg --tcp=22  tcp://127.0.0.1:$PORT >/dev/null 2>&1 || true
-    ts funnel --bg --tls-terminated-tcp=443 tcp://127.0.0.1:$PORT >/dev/null 2>&1
-    if ! ts funnel status 2>/dev/null | grep -q "Funnel on"; then
-        echo "[!] Funnel could not be enabled on this tailnet."
-        echo "    If not approved yet: tailscale funnel --tls-terminated-tcp=443 tcp://127.0.0.1:$PORT"
-        echo "    It prints an approval URL; open it, re-run ./vps."
-        return 1
-    fi
-    return 0
-}
-
-# --- main --------------------------------------------------------------
-
+# keep Android from killing us
 termux-wake-lock 2>/dev/null || true
-
-TS_MODE=off
-if [ -x "$(command -v $TS)" ] || [ -x "/data/data/com.termux/files/usr/bin/$TS" ]; then
-    if ensure_tailscaled; then
-        STATE="$(tailscale_state)"
-        case "$STATE" in
-            Running)
-                TS_MODE=on
-                DNS_NAME="$(ts status --json 2>/dev/null | tr ',' '\n' | grep -o '"DNSName": *"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/;s/\.$//')"
-                TS_IP="$(ts ip -4 2>/dev/null | head -1)"
-                ;;
-            NeedsLogin|NoState|Stopped)
-                echo "[!] Tailscale needs login. Run: tailscale up"
-                echo "    (./vps continues in LAN-only mode meanwhile)"
-                ;;
-            *)
-                echo "[?] Tailscale state: $STATE — continuing in LAN-only mode"
-                ;;
-        esac
-    else
-        echo "[!] tailscaled would not start. Continuing in LAN-only mode."
-    fi
-else
-    echo "[!] tailscale not installed. LAN-only mode."
-fi
-
-if [ "$TS_MODE" = on ]; then
-    ensure_forwarders || TS_MODE=partial
-fi
 
 LAN_IP="$(ifconfig wlan0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}')"
 [ -z "$LAN_IP" ] && LAN_IP="$(ifconfig eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}')"
 
-echo
-echo "${BOLD}VPS starting...${NORM} (Fedora proot, sshd on :$PORT)"
-echo
-
-# Export connection info for the container banner (no secrets)
-export VPS_HOST="$DNS_NAME"
-export VPS_TAILNET_IP="$TS_IP"
-export VPS_LAN_IP="$LAN_IP"
-export VPS_TS_MODE="$TS_MODE"
-
-exec proot-distro login "$DISTRO" -e VPS_HOST="$VPS_HOST" -e VPS_TAILNET_IP="$VPS_TAILNET_IP" \
-     -e VPS_LAN_IP="$VPS_LAN_IP" -e VPS_TS_MODE="$VPS_TS_MODE" -- /usr/local/bin/vps-start.sh
+echo "VPS starting... (Fedora proot, sshd :$PORT + bore.pub tunnel)"
+exec proot-distro login "$DISTRO" -e VPS_LAN_IP="$LAN_IP" -- /usr/local/bin/vps-start.sh
