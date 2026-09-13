@@ -8,13 +8,6 @@ client machine**, thanks to [Tailscale Funnel](https://tailscale.com/kb/1223/fun
 laptop ──ssh──► internet ──► Tailscale Funnel (:443) ──► sshd in Fedora proot (:2222)
 ```
 
-## Why this exists
-
-You want to experiment with a Linux box from your laptop, and the phone in your
-pocket is the only spare hardware you have. This repo makes the whole setup a
-one-command affair — and, more importantly, **reproducible**: wipe Termux, run
-`install.sh`, and you're back.
-
 ## Quick start (fresh Termux)
 
 ```bash
@@ -24,82 +17,96 @@ cd termux-vps
 bash install.sh
 ```
 
-The install script prints the few interactive steps it can't do for you
-(`passwd`, `tailscale up`, Funnel enable). Total hands-on time: ~5 minutes.
+`install.sh` is **idempotent** — safe to re-run after interruptions; it skips
+what's already done. It prints the few interactive steps it can't do for you:
+
+1. `passwd root` — inside the Fedora container (your SSH password)
+2. `tailscale up` — sign in with your Tailscale account
+3. Funnel approval — one URL click, first time only per tailnet
+
+Then start the VPS any time: `~/vps`
 
 ## Daily usage
 
-| Command | Where | What it does |
+| Command | Where | What |
 |---|---|---|
-| `./vps` | Termux | Boots the VPS: wake-lock, ensures tailscaled + Funnel are up, starts sshd in proot, prints the ssh command |
-| `./vps-stop` | Termux | Kills sshd, closes the Funnel forwarder, releases the wake lock |
-| `ssh root@<name>.ts.net -p 443` | anywhere | Log in (password auth) |
+| `~/vps` | Termux | Boots VPS: wake-lock, tailscaled check, Funnel forwarders, sshd, prints ssh command |
+| `~/vps-stop` | Termux | Full teardown: sshd, forwarders, wake-lock |
+| `ssh root@<name>.ts.net -p 443` | anywhere | Log in over the public Funnel bridge |
+| `ssh root@100.x.y.z` | tailnet client | Tailnet-only path (needs Tailscale on client) |
 
-The VPS exists **only while `./vps` is running** — that's by design; you decide
-when your phone is reachable.
+The VPS exists **only while `vps` runs** — you decide when the phone is reachable.
+
+## Autostart on phone reboot (optional)
+
+Install the [Termux:Boot](https://wiki.termux.com/wiki/Termux:Boot) app (F-Droid,
+same signature as Termux), then once:
+
+```bash
+mkdir -p ~/.termux/boot
+cp ~/termux-vps/boot-autostart.sh ~/.termux/boot/10-vps
+```
+
+After each phone reboot the VPS comes up headless (~30s), no Termux app open needed.
+Battery-optimization exemption for both Termux apps recommended.
 
 ## The pieces
 
 ```
-vps                 (Termux ~/vps)        Orchestrator: run from plain Termux
-vps-start.sh        (Fedora /usr/local/bin)  Starts sshd, prints connection info, keep-alive loop
-vps-stop            (Termux ~/vps-stop)   Teardown
-install.sh          (repo)                One-shot reproducible installer
+vps                  Termux orchestrator (idempotent, graceful degradation to LAN mode)
+vps-start.sh         inside Fedora: starts sshd, banner, keep-alive loop
+vps-stop             teardown that never kills its own ancestors
+boot-autostart.sh    Termux:Boot hook for reboot survival
+install.sh           one-shot idempotent installer
 ```
 
 ### How it works
 
-- **sshd** runs inside the Fedora proot container on port `2222`, with
-  root + password login.
-- **Termux's tailscaled** runs in userspace-networking mode (no root VPN tunnel
-  on Android), so plain tailnet IPs can't receive inbound connections directly.
-- **`tailscale funnel --tcp=443`** bridges the public internet to `127.0.0.1:2222`,
-  which is what makes the phone SSH-able from any machine, no Tailscale client
-  installed.
-- `./vps` runs `vps-start.sh` inside proot in the foreground — when the
-  Termux session dies, sshd dies with it. `termux-wake-lock` keeps Android
-  from killing the session.
+- **sshd** runs inside the Fedora proot container on `:2222`, root + password login.
+- **Termux's tailscaled** runs in userspace-networking mode (Android has no root
+  VPN tunnel), so inbound connections must be bridged.
+- **`tailscale funnel --tcp=443`** bridges the public internet to `127.0.0.1:2222`
+  — the zero-client-software path.
+- **`tailscale serve --tcp=22`** bridges the tailnet to the same sshd — if you do
+  have Tailscale on a client, use this path (faster, private, still works).
+- `vps` exports connection info as env vars into the container; the banner shows
+  whichever paths are actually available. If Tailscale is down, it degrades to
+  LAN mode instead of failing.
 
-## Reproducibility notes
+## Robustness notes
 
-- Fedora 44 via `proot-distro`. Any distro works; `dnf install openssh-server`
-  is the only distro-specific line in `install.sh`.
-- Tailscale comes from [bropines/tailscale-termux-cli](https://github.com/bropines/tailscale-termux-cli)
-  (`tailscale-termux` package) — a patched build for Termux/Android 11+, installed
-  via its upstream installer. It expects `termux-services` and manages the
-  daemon via `sv`.
-- The Funnel hostname (`<something>.tailXXXX.ts.net`) is tied to your Tailscale
-  account, not this repo — after a wipe it's the same, because the node key
-  is re-registered under the same account. Your tailnet *name* stays stable.
-- Funnel exposes **port 443 only, TCP** to the internet. Everything else on the
-  phone is unreachable.
+- Every script is **idempotent** — `vps` twice, `vps-stop` twice, `install.sh`
+  after a partial run: all safe.
+- `vps-start.sh` keep-alive re-checks sshd every 30s; if it dies, it restarts.
+- `vps-stop` walks each target's parent chain and never kills its own ancestors.
+- `vps` handles: tailscaled not running (starts it), not logged in (warns, LAN
+  mode), Funnel unapproved (prints the approval URL).
 
 ## Security
 
-- Funnel means the public internet can reach your sshd. **Use a long random
-  password** (20+ chars) or SSH keys. Bots do scan `.ts.net` hostnames.
-- `./vps-stop` (or just closing Termux) removes all exposure instantly.
-- Disable password auth entirely once you've set up key auth:
-  in Fedora, set `PasswordAuthentication no` in `/etc/ssh/sshd_config`.
-- Credentials inside the Fedora container are saved at `/root/VPS-CREDENTIALS.txt`.
+- Funnel exposes **tcp/443 only** to the internet; everything else on the phone
+  is unreachable. Bots do scan `.ts.net` — use a long random password or SSH keys.
+- Going key-only: add your key to `/root/.ssh/authorized_keys` in Fedora, then
+  set `PasswordAuthentication no` in `/etc/ssh/sshd_config`.
+- `vps-stop` (or closing Termux) removes all exposure instantly.
+- Never commit passwords/tokens; none are in this repo.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `./vps` prints LAN-mode only | tailscaled isn't up: `tailscaled-start --service=on` |
-| ssh connects but auth fails | `proot-distro login fedora` → `passwd root` |
-| `tailscale funnel` says "not enabled" | open the URL it prints, approve, re-run |
-| sshd dies after a while | check `termux-wake-lock` held; disable battery optimization for Termux |
-| `tailscale up` hangs | see `tailscale-test` (diagnostics from the tailscale-termux package) |
+| `vps` says LAN mode only | `tailscale up` (login), or `tailscale-test` (diagnostics) |
+| ssh auth fails | `proot-distro login fedora` → `passwd root` |
+| Funnel "not enabled" | `vps` prints the approval URL; open it, re-run `vps` |
+| dies after minutes | hold `termux-wake-lock` (automatic), exempt Termux from battery optimization |
+| after phone reboot | run `~/vps`, or set up Termux:Boot (above) |
+| `tailscale up` hangs | `tailscale-test` diagnostics from the tailscale-termux package |
 
-## Why not Tailscale on the laptop too?
+## Credits
 
-If you do install the Tailscale client on your laptop, everything gets nicer:
-`ssh root@100.x.y.z` (tailnet IP, port 22, tailnet-only, no public exposure).
-This repo defaults to Funnel precisely so the laptop needs **nothing** —
-trade-off: your sshd is publicly reachable while `./vps` runs.
+- [bropines/tailscale-termux-cli](https://github.com/bropines/tailscale-termux-cli) —
+  the patched Tailscale build that makes userspace-mode + Funnel work on Termux.
 
 ## License
 
-MIT — do whatever.
+MIT

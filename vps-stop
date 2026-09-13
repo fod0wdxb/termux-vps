@@ -1,11 +1,30 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# vps-stop — kill sshd inside proot, close Tailscale forwarders, release wake lock.
-TS=/data/data/com.termux/files/usr/bin/tailscale
-SOCK="$HOME/.tailscale/tailscaled.sock"
+# vps-stop — full teardown. Safe to run multiple times.
+# Kills only what ./vps started; never touches this session's own parents.
 
+TS="${TS:-tailscale}"
+SOCK="$HOME/.tailscale/tailscaled.sock"
+ts() { "$TS" --socket="$SOCK" "$@"; }
+
+# sshd inside the container (via short-lived proot; harmless if already down)
 proot-distro login fedora -- pkill -x sshd 2>/dev/null
-pkill -f "proot-distro login fedora" 2>/dev/null
-"$TS" --socket="$SOCK" serve --tcp=22 off 2>/dev/null
-"$TS" --socket="$SOCK" funnel --tcp=443 off 2>/dev/null
-termux-wake-unlock 2>/dev/null
-echo "VPS stopped."
+
+# any interactive `vps` proot sessions (keep-alive loops), except our ancestors
+for pid in $(pgrep -f "proot-distro login fedora" 2>/dev/null); do
+    skip=0
+    p="$pid"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        p="$(awk '{print $4}' /proc/$p/stat 2>/dev/null)"
+        [ -z "$p" ] || [ "$p" = "0" ] && break
+        [ "$p" = "$$" ] && { skip=1; break; }
+    done
+    [ "$skip" = "1" ] && continue
+    kill "$pid" 2>/dev/null
+done
+
+# close forwarders
+ts serve --tcp=22  off >/dev/null 2>&1 || true
+ts funnel --tcp=443 off >/dev/null 2>&1 || true
+
+termux-wake-unlock 2>/dev/null || true
+echo "VPS stopped. (tailscaled keeps running — it's harmless.)"
