@@ -1,0 +1,42 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# vps — one command to turn your phone into an SSH-able VPS.
+# Run this from plain Termux (NOT inside proot).
+
+DISTRO=fedora
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PORT=2222
+
+# keep Android from killing us
+termux-wake-lock 2>/dev/null || true
+
+# --- Tailscale (works from anywhere, no LAN IP needed) ---
+TS=/data/data/com.termux/files/usr/bin/tailscale
+SOCK="$HOME/.tailscale/tailscaled.sock"
+
+if [ -x "$TS" ] && [ -S "$SOCK" ]; then
+    # make sure the daemon is up (it auto-restarts via termux-services)
+    if ! "$TS" --socket="$SOCK" status >/dev/null 2>&1; then
+        echo "Starting tailscaled..."
+        tailscaled-start >/dev/null 2>&1
+        sleep 2
+    fi
+
+    TS_IP=$("$TS" --socket="$SOCK" ip -4 2>/dev/null | head -1)
+    if [ -n "$TS_IP" ]; then
+        # ensure both forwarders exist (they persist once set)
+        # :22  -> tailnet-only  (if you later install Tailscale on a client)
+        # :443 -> public via Funnel (zero client software needed)
+        "$TS" --socket="$SOCK" serve --bg --tcp=22 tcp://127.0.0.1:$PORT >/dev/null 2>&1
+        "$TS" --socket="$SOCK" funnel --bg --tcp=443 tcp://127.0.0.1:$PORT >/dev/null 2>&1
+    fi
+fi
+
+echo "Starting VPS (proot $DISTRO, sshd on :$PORT)..."
+proot-distro login "$DISTRO" -- bash -s < "$SCRIPT_DIR/vps-start.sh" "$TS_IP"
+
+# fall back to LAN IP if tailscale unavailable
+if [ -z "$TS_IP" ]; then
+    IP=$(ifconfig wlan0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}')
+    [ -z "$IP" ] && IP=$(ifconfig eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}')
+    echo "(Tailscale unavailable — LAN mode. On same Wi-Fi only.)"
+fi

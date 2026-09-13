@@ -1,0 +1,11 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# vps-stop — kill sshd inside proot, close Tailscale forwarders, release wake lock.
+TS=/data/data/com.termux/files/usr/bin/tailscale
+SOCK="$HOME/.tailscale/tailscaled.sock"
+
+proot-distro login fedora -- pkill -x sshd 2>/dev/null
+pkill -f "proot-distro login fedora" 2>/dev/null
+"$TS" --socket="$SOCK" serve --tcp=22 off 2>/dev/null
+"$TS" --socket="$SOCK" funnel --tcp=443 off 2>/dev/null
+termux-wake-unlock 2>/dev/null
+echo "VPS stopped."
