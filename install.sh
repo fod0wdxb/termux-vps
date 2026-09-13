@@ -36,7 +36,7 @@ if proot-distro login "$DISTRO" -- test -x /usr/local/bin/bore 2>/dev/null && \
 else
     proot-distro login "$DISTRO" -- bash << 'INNER'
     set -e
-    dnf install -y openssh-server curl
+    dnf install -y openssh-server cracklib-dicts curl
     ssh-keygen -A
     if ! grep -q "^Port $PORT$" /etc/ssh/sshd_config 2>/dev/null; then
         printf '\n# --- termux-vps ---\nPort %s\nPermitRootLogin yes\nPasswordAuthentication yes\n' "$PORT" >> /etc/ssh/sshd_config

@@ -101,6 +101,7 @@ optimization.
 | `bore.pub` unreachable | relay down (rare) — use LAN mode meanwhile, or self-host `bore server` |
 | fixed port 22022 taken | script auto-falls back to a random port; or set your own `BORE_PORT` |
 | ssh auth fails | `proot-distro login fedora` → `passwd root` |
+| `passwd` errors `pw_dict.pwd.gz: No such file` | `dnf install -y cracklib-dicts` (stock container lacks the dictionary; install.sh now does this automatically) |
 | dies after minutes | exempt Termux from battery optimization; keep `vps` session in foreground |
 | after phone reboot | `~/vps`, or set up Termux:Boot (above) |
 
