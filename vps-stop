@@ -24,7 +24,7 @@ done
 
 # close forwarders
 ts serve --tcp=22  off >/dev/null 2>&1 || true
-ts funnel --tcp=443 off >/dev/null 2>&1 || true
+ts funnel --tls-terminated-tcp=443 off >/dev/null 2>&1 || true
 
 termux-wake-unlock 2>/dev/null || true
 echo "VPS stopped. (tailscaled keeps running — it's harmless.)"

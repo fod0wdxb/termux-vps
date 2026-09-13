@@ -42,11 +42,15 @@ tailscale_state() {
 
 ensure_forwarders() {
     # :22 tailnet-only + :443 public Funnel — both persist once configured
+    # :22  tailnet-only raw TCP (client has Tailscale) — plain ssh
+    # :443 public via Funnel — must be TLS-terminated: Funnel's edge only
+    #      forwards TLS (it routes by SNI; raw TCP gets closed instantly).
+    #      Client connects with: ssh over openssl s_client (see README).
     ts serve --bg --tcp=22  tcp://127.0.0.1:$PORT >/dev/null 2>&1 || true
-    ts funnel --bg --tcp=443 tcp://127.0.0.1:$PORT >/dev/null 2>&1
+    ts funnel --bg --tls-terminated-tcp=443 tcp://127.0.0.1:$PORT >/dev/null 2>&1
     if ! ts funnel status 2>/dev/null | grep -q "Funnel on"; then
         echo "[!] Funnel could not be enabled on this tailnet."
-        echo "    If not approved yet: tailscale funnel --tcp=443 tcp://127.0.0.1:$PORT"
+        echo "    If not approved yet: tailscale funnel --tls-terminated-tcp=443 tcp://127.0.0.1:$PORT"
         echo "    It prints an approval URL; open it, re-run ./vps."
         return 1
     fi

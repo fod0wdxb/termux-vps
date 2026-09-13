@@ -39,8 +39,25 @@ Then start the VPS any time: `~/vps`
 |---|---|---|
 | `~/vps` | Termux | Boots VPS: wake-lock, tailscaled check, Funnel forwarders, sshd, prints ssh command |
 | `~/vps-stop` | Termux | Full teardown: sshd, forwarders, wake-lock |
-| `ssh root@<name>.ts.net -p 443` | anywhere | Log in over the public Funnel bridge |
+| `ssh -o ProxyCommand='openssl s_client -connect <name>.ts.net:443 -quiet' root@vps` | anywhere | Log in over public Funnel bridge (TLS-terminated) |
 | `ssh root@100.x.y.z` | tailnet client | Tailnet-only path (needs Tailscale on client) |
+
+**Why the openssl wrapper for public access?** Tailscale Funnel's edge only
+forwards **TLS** traffic (it routes by the TLS SNI hostname — see
+[tailscale/tailscale#7103](https://github.com/tailscale/tailscale/issues/7103)).
+A bare `ssh` speaks no TLS, so the edge closes the connection. With
+`--tls-terminated-tcp`, Funnel strips the TLS and forwards the raw stream to
+sshd; `openssl s_client` (preinstalled on macOS/Linux) adds the TLS on the
+client side. Easiest setup — put this in your laptop's `~/.ssh/config`:
+
+```
+Host phone-vps
+    HostName vps
+    User root
+    ProxyCommand openssl s_client -connect <your-name>.tailXXXX.ts.net:443 -quiet
+```
+
+then it's just: `ssh phone-vps`
 
 The VPS exists **only while `vps` runs** — you decide when the phone is reachable.
 
@@ -72,8 +89,10 @@ install.sh           one-shot idempotent installer
 - **sshd** runs inside the Fedora proot container on `:2222`, root + password login.
 - **Termux's tailscaled** runs in userspace-networking mode (Android has no root
   VPN tunnel), so inbound connections must be bridged.
-- **`tailscale funnel --tcp=443`** bridges the public internet to `127.0.0.1:2222`
-  — the zero-client-software path.
+- **`tailscale funnel --tls-terminated-tcp=443`** bridges the public internet
+  to `127.0.0.1:2222` — TLS is mandatory at Funnel's edge (SNI routing), the
+  daemon terminates it and hands raw SSH to sshd. Client wraps with openssl
+  (see above). Zero extra software — openssl ships with macOS and every distro.
 - **`tailscale serve --tcp=22`** bridges the tailnet to the same sshd — if you do
   have Tailscale on a client, use this path (faster, private, still works).
 - `vps` exports connection info as env vars into the container; the banner shows
@@ -105,6 +124,7 @@ install.sh           one-shot idempotent installer
 | `vps` says LAN mode only | `tailscale up` (login), or `tailscale-test` (diagnostics) |
 | ssh auth fails | `proot-distro login fedora` → `passwd root` |
 | Funnel "not enabled" | `vps` prints the approval URL; open it, re-run `vps` |
+| `Connection closed by ... port 443` | you used plain `ssh` — Funnel needs TLS, use the ProxyCommand form above |
 | dies after minutes | hold `termux-wake-lock` (automatic), exempt Termux from battery optimization |
 | after phone reboot | run `~/vps`, or set up Termux:Boot (above) |
 | `tailscale up` hangs | `tailscale-test` diagnostics from the tailscale-termux package |

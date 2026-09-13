@@ -45,17 +45,15 @@ echo
 echo "=============================================="
 echo "  Phone VPS is UP"
 echo "=============================================="
-if grep -q '^root:[^!]' /etc/shadow 2>/dev/null; then
-    :
-else
+if ! grep -q '^root:[^!]' /etc/shadow 2>/dev/null; then
     echo "[!] No root password set. SSH login will fail."
     echo "    Fix inside Fedora: passwd root"
 fi
 if [ -n "${VPS_HOST:-}" ]; then
-    echo "Public (anywhere, no client software):"
-    echo "    ssh root@${VPS_HOST} -p 443"
+    echo "Public (anywhere; Funnel is TLS-terminated, so ssh goes over TLS):"
+    echo "    ssh -o ProxyCommand='openssl s_client -connect ${VPS_HOST}:443 -quiet' root@vps"
     echo
-    echo "Tailnet-only (client has Tailscale):"
+    echo "Tailnet-only (client has Tailscale — plain ssh):"
     echo "    ssh root@${VPS_TAILNET_IP:-<tailnet-ip>}"
 else
     echo "Tailscale is not fully up — LAN mode only:"
